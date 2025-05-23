@@ -3,7 +3,10 @@ use web_sys::HtmlInputElement;
 use yew::prelude::*;
 use yew_agent::{Bridge, Bridged};
 
-use crate::{services::{event_bus::EventBus, websocket::WebsocketService}, User};
+use crate::{
+    services::{event_bus::EventBus, websocket::WebsocketService},
+    User,
+};
 
 pub enum Msg {
     HandleMsg(String),
@@ -61,14 +64,12 @@ impl Component for Chat {
 
         let message = WebSocketMessage {
             message_type: MsgTypes::Register,
-            data: Some(username.to_string()),
+            data: Some(username),
             data_array: None,
         };
 
-        log::debug!("Create function");
-
         if let Ok(_) = wss.tx.clone().try_send(serde_json::to_string(&message).unwrap()) {
-            log::debug!("Message sent successfully!");
+            log::debug!("Registered successfully!");
         }
 
         Self {
@@ -90,36 +91,29 @@ impl Component for Chat {
                         self.users = users_from_message
                             .iter()
                             .map(|u| UserProfile {
-                                name: u.into(),
-                                avatar: format!(
-                                    "https://avatars.dicebear.com/api/adventurer-neutral/{}.svg",
-                                    u
-                                )
-                                .into(),
+                                name: u.clone(),
+                                avatar: format!("https://api.dicebear.com/8.x/adventurer-neutral/svg?seed={}", u),
                             })
                             .collect();
-                        return true;
+                        true
                     }
                     MsgTypes::Message => {
                         let message_data: MessageData = serde_json::from_str(&msg.data.unwrap()).unwrap();
                         self.messages.push(message_data);
-                        return true;
+                        true
                     }
-                    _ => {
-                        return false;
-                    }
+                    _ => false,
                 }
             }
             Msg::SubmitMessage => {
-                let input = self.chat_input.cast::<HtmlInputElement>();
-                if let Some(input) = input {
+                if let Some(input) = self.chat_input.cast::<HtmlInputElement>() {
                     let message = WebSocketMessage {
                         message_type: MsgTypes::Message,
                         data: Some(input.value()),
                         data_array: None,
                     };
                     if let Err(e) = self.wss.tx.clone().try_send(serde_json::to_string(&message).unwrap()) {
-                        log::debug!("Error sending to channel: {:?}", e);
+                        log::debug!("Send error: {:?}", e);
                     }
                     input.set_value("");
                 }
@@ -130,66 +124,82 @@ impl Component for Chat {
 
     fn view(&self, ctx: &Context<Self>) -> Html {
         let submit = ctx.link().callback(|_| Msg::SubmitMessage);
+        let (cur_user, _) = ctx.link().context::<User>(Callback::noop()).expect("Context to be set");
+        let cur_username = cur_user.username.borrow().clone();
+
         html! {
-            <div class="flex w-screen">
-                <div class="flex-none w-56 h-screen bg-gray-100">
-                    <div class="text-xl p-3">{"Users"}</div>
-                    {
-                        self.users.clone().iter().map(|u| {
-                            html!{
-                                <div class="flex m-3 bg-white rounded-lg p-2">
-                                    <div>
-                                        <img class="w-12 h-12 rounded-full" src={u.avatar.clone()} alt="avatar"/>
-                                    </div>
-                                    <div class="flex-grow p-3">
-                                        <div class="flex text-xs justify-between">
-                                            <div>{u.name.clone()}</div>
-                                        </div>
-                                        <div class="text-xs text-gray-400">
-                                            {"Hi there!"}
-                                        </div>
-                                    </div>
+            <div class="flex w-screen h-screen overflow-hidden">
+                <aside class="w-64 bg-gray-100 border-r overflow-y-auto">
+                    <div class="text-xl font-semibold p-4 border-b">{"Users"}</div>
+                    { for self.users.iter().map(|u| {
+                        let is_self = u.name == cur_username;
+                        let user_style = if is_self {
+                            "bg-green-100 border-l-4 border-green-400"
+                        } else {
+                            "bg-white"
+                        };
+                        html! {
+                            <div class={classes!("flex", "items-center", "m-3", "rounded-md", "p-2", "shadow-sm", user_style)}>
+                                <img class="w-10 h-10 rounded-full mr-3" src={u.avatar.clone()} />
+                                <div>
+                                    <div class="font-medium text-sm">{&u.name}</div>
+                                    <div class="text-xs text-gray-500">{"Hi there!"}</div>
                                 </div>
-                            }
-                        }).collect::<Html>()
-                    }
-                </div>
-                <div class="grow h-screen flex flex-col">
-                    <div class="w-full h-14 border-b-2 border-gray-300"><div class="text-xl p-3">{"💬 Chat!"}</div></div>
-                    <div class="w-full grow overflow-auto border-b-2 border-gray-300">
-                        {
-                            self.messages.iter().map(|m| {
-                                let user = self.users.iter().find(|u| u.name == m.from).unwrap();
-                                html!{
-                                    <div class="flex items-end w-3/6 bg-gray-100 m-8 rounded-tl-lg rounded-tr-lg rounded-br-lg ">
-                                        <img class="w-8 h-8 rounded-full m-3" src={user.avatar.clone()} alt="avatar"/>
-                                        <div class="p-3">
-                                            <div class="text-sm">
-                                                {m.from.clone()}
-                                            </div>
-                                            <div class="text-xs text-gray-500">
-                                                if m.message.ends_with(".gif") {
-                                                    <img class="mt-3" src={m.message.clone()}/>
-                                                } else {
-                                                    {m.message.clone()}
+                            </div>
+                        }
+                    })}
+                </aside>
+
+                <main class="flex-1 flex flex-col">
+                    <header class="bg-white border-b p-4 text-xl font-bold">{"💬 Let's Chat!"}</header>
+
+                    <section class="flex-1 overflow-y-auto px-4 py-6 space-y-4 bg-gray-50">
+                        { for self.messages.iter().map(|m| {
+                            let is_self = m.from == cur_username;
+                            let avatar = self.users.iter().find(|u| u.name == m.from).map(|u| u.avatar.clone()).unwrap_or_default();
+                            let alignment = if is_self { "justify-end" } else { "justify-start" };
+                            let bubble_style = if is_self {
+                                "bg-green-500 text-white rounded-l-2xl rounded-br-2xl"
+                            } else {
+                                "bg-gray-200 text-gray-900 rounded-r-2xl rounded-bl-2xl"
+                            };
+
+                            html! {
+                                <div class={classes!("flex", alignment)}>
+                                    <div class={classes!("flex", "items-start", "space-x-2", "max-w-md", "p-3", bubble_style)}>
+                                        <img class="w-8 h-8 rounded-full" src={avatar} />
+                                        <div>
+                                            <div class="text-sm font-semibold">{&m.from}</div>
+                                            <div class="mt-1 text-sm">
+                                                {
+                                                    if m.message.ends_with(".gif") {
+                                                        html! { <img class="rounded-md max-w-[200px]" src={m.message.clone()} /> }
+                                                    } else {
+                                                        html! { <span>{&m.message}</span> }
+                                                    }
                                                 }
                                             </div>
                                         </div>
                                     </div>
-                                }
-                            }).collect::<Html>()
-                        }
+                                </div>
+                            }
+                        })}
+                    </section>
 
-                    </div>
-                    <div class="w-full h-14 flex px-3 items-center">
-                        <input ref={self.chat_input.clone()} type="text" placeholder="Message" class="block w-full py-2 pl-4 mx-3 bg-gray-100 rounded-full outline-none focus:text-gray-700" name="message" required=true />
-                        <button onclick={submit} class="p-3 shadow-sm bg-blue-600 w-10 h-10 rounded-full flex justify-center items-center color-white">
-                            <svg fill="#000000" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" class="fill-white">
-                                <path d="M0 0h24v24H0z" fill="none"></path><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
+                    <footer class="p-4 bg-white border-t flex items-center space-x-3 sticky bottom-0">
+                        <input
+                            ref={self.chat_input.clone()}
+                            type="text"
+                            placeholder="Type a message..."
+                            class="flex-grow rounded-full border border-gray-300 p-2 px-4 focus:outline-none focus:ring-2 focus:ring-violet-400"
+                        />
+                        <button onclick={submit} class="bg-violet-600 hover:bg-violet-700 text-white rounded-full w-10 h-10 flex items-center justify-center transition">
+                            <svg fill="currentColor" viewBox="0 0 24 24" class="w-5 h-5">
+                                <path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"></path>
                             </svg>
                         </button>
-                    </div>
-                </div>
+                    </footer>
+                </main>
             </div>
         }
     }
